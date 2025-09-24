@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Dieses Skript soll via: sudo ./setup_arch_kde.sh
-# vom gewünschten Normaluser aus aufgerufen werden.
+# Bitte als Normaluser mit sudo ausführen: sudo ./setup_arch_kde.sh
 
 if [[ $EUID -ne 0 ]]; then
   echo "Bitte mit sudo als normaler Benutzer ausführen."
@@ -15,8 +14,6 @@ if [[ -z "${TARGET_USER}" || "${TARGET_USER}" == "root" ]]; then
   exit 1
 fi
 
-export EDITOR=vi
-export VISUAL=vi
 export SYSTEMD_PAGER=cat
 
 echo "==> System aktualisieren und Pakete installieren ..."
@@ -24,14 +21,19 @@ pacman -Syu --noconfirm
 pacman -S --noconfirm --needed \
   plasma-meta sddm \
   kitty fish starship fastfetch \
-  xdg-user-dirs
+  xdg-user-dirs \
+  open-vm-tools
 
-# Optional: Benutzer-Verzeichnisse anlegen/aktualisieren
+echo "==> Benutzer-Verzeichnisse initialisieren ..."
 sudo -u "$TARGET_USER" xdg-user-dirs-update
 
 echo "==> SDDM aktivieren und grafisches Target setzen ..."
 systemctl enable --now sddm.service
 systemctl set-default graphical.target
+
+echo "==> open-vm-tools aktivieren ..."
+systemctl enable --now vmtoolsd.service
+systemctl enable --now vmware-vmblock-fuse.service
 
 echo "==> fish als Login-Shell setzen ..."
 FISH_BIN="$(command -v fish)"
@@ -89,6 +91,21 @@ cat > "/home/$TARGET_USER/.config/fastfetch/config.jsonc" <<'JSON'
   ]
 }
 JSON
+# Optionaler Symlink für alternativen Suchpfad
+ln -sf "/home/$TARGET_USER/.config/fastfetch/config.jsonc" "/home/$TARGET_USER/.config/fastfetch.jsonc"
+chown -h "$TARGET_USER:$TARGET_USER" "/home/$TARGET_USER/.config/fastfetch.jsonc"
 chown -R "$TARGET_USER:$TARGET_USER" "/home/$TARGET_USER/.config/fastfetch"
+
+echo "==> Kitty Catppuccin (Mocha) Theme setzen ..."
+install -d -m 0755 -o "$TARGET_USER" -g "$TARGET_USER" "/home/$TARGET_USER/.config/kitty"
+# include-Zeile einmalig sicherstellen
+if [[ ! -f "/home/$TARGET_USER/.config/kitty/kitty.conf" ]] || ! grep -q '^include[[:space:]]\+theme.conf' "/home/$TARGET_USER/.config/kitty/kitty.conf"; then
+  echo "include theme.conf" >> "/home/$TARGET_USER/.config/kitty/kitty.conf"
+fi
+# Theme-Datei per kitten themes dumpen (als Zieluser)
+if command -v kitty >/dev/null 2>&1; then
+  sudo -u "$TARGET_USER" kitty +kitten themes --dump-theme "Catppuccin-Mocha" > "/home/$TARGET_USER/.config/kitty/theme.conf" || true
+fi
+chown -R "$TARGET_USER:$TARGET_USER" "/home/$TARGET_USER/.config/kitty"
 
 echo "==> Fertig. Neustart empfohlen."
