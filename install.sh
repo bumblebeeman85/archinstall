@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Bitte als Normaluser mit sudo ausführen: sudo ./setup_arch_kde.sh
+# Als Normaluser mit sudo ausführen: sudo ./setup_arch_kde.sh
 
 if [[ $EUID -ne 0 ]]; then
-  echo "Bitte mit sudo als normaler Benutzer ausführen."
+  echo "Bitte als normaler Benutzer mit sudo ausführen."
   exit 1
 fi
 
@@ -21,8 +21,9 @@ pacman -Syu --noconfirm
 pacman -S --noconfirm --needed \
   plasma-meta sddm \
   kitty fish starship fastfetch \
-  xdg-user-dirs \
-  open-vm-tools
+  xdg-user-dirs git \
+  open-vm-tools \
+  papirus-icon-theme kde-gtk-config
 
 echo "==> Benutzer-Verzeichnisse initialisieren ..."
 sudo -u "$TARGET_USER" xdg-user-dirs-update
@@ -91,21 +92,82 @@ cat > "/home/$TARGET_USER/.config/fastfetch/config.jsonc" <<'JSON'
   ]
 }
 JSON
-# Optionaler Symlink für alternativen Suchpfad
+# zusätzlicher Symlink für alternativen Suchpfad
 ln -sf "/home/$TARGET_USER/.config/fastfetch/config.jsonc" "/home/$TARGET_USER/.config/fastfetch.jsonc"
 chown -h "$TARGET_USER:$TARGET_USER" "/home/$TARGET_USER/.config/fastfetch.jsonc"
 chown -R "$TARGET_USER:$TARGET_USER" "/home/$TARGET_USER/.config/fastfetch"
 
 echo "==> Kitty Catppuccin (Mocha) Theme setzen ..."
 install -d -m 0755 -o "$TARGET_USER" -g "$TARGET_USER" "/home/$TARGET_USER/.config/kitty"
-# include-Zeile einmalig sicherstellen
 if [[ ! -f "/home/$TARGET_USER/.config/kitty/kitty.conf" ]] || ! grep -q '^include[[:space:]]\+theme.conf' "/home/$TARGET_USER/.config/kitty/kitty.conf"; then
   echo "include theme.conf" >> "/home/$TARGET_USER/.config/kitty/kitty.conf"
 fi
-# Theme-Datei per kitten themes dumpen (als Zieluser)
 if command -v kitty >/dev/null 2>&1; then
   sudo -u "$TARGET_USER" kitty +kitten themes --dump-theme "Catppuccin-Mocha" > "/home/$TARGET_USER/.config/kitty/theme.conf" || true
 fi
 chown -R "$TARGET_USER:$TARGET_USER" "/home/$TARGET_USER/.config/kitty"
 
-echo "==> Fertig. Neustart empfohlen."
+echo "==> Catppuccin KDE (Farbschemata) optional bereitstellen ..."
+# Catppuccin KDE Farbschemata in den Benutzer-Scope installieren (optional)
+sudo -u "$TARGET_USER" bash -lc '
+  set -e
+  tmpdir="$(mktemp -d)"
+  git clone --depth=1 https://github.com/catppuccin/kde "$tmpdir/catppuccin-kde"
+  install -d -m 0755 "$HOME/.local/share/color-schemes"
+  # Kopiere alle *.colors, falls vorhanden
+  find "$tmpdir/catppuccin-kde" -type f -name "*.colors" -exec install -m 0644 "{}" "$HOME/.local/share/color-schemes/" \; || true
+  rm -rf "$tmpdir"
+' || true
+
+echo "==> Autostart für Theme-Anwendung beim ersten Plasma-Login erstellen ..."
+# Skript, das beim ersten Plasma-Login Farben, L&F und Icons setzt und sich dann selbst entfernt
+install -d -m 0755 -o "$TARGET_USER" -g "$TARGET_USER" "/home/$TARGET_USER/.local/bin"
+cat > "/home/$TARGET_USER/.local/bin/apply-kde-themes.sh" <<'EOS'
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Farben: Catppuccin Mocha, falls installiert; sonst Breeze Dark
+if command -v plasma-apply-colorscheme >/dev/null 2>&1; then
+  if plasma-apply-colorscheme -l | grep -q "Catppuccin.*Mocha"; then
+    plasma-apply-colorscheme "Catppuccin Mocha" || true
+  else
+    plasma-apply-colorscheme "Breeze Dark" || true
+  fi
+fi
+
+# Global Theme (L&F): Breeze Dark anwenden
+if command -v plasma-apply-lookandfeel >/dev/null 2>&1; then
+  plasma-apply-lookandfeel --apply org.kde.breezedark.desktop || true
+fi
+
+# Icons: Papirus-Dark setzen (KDE liest aus kdeglobals)
+if command -v kwriteconfig6 >/dev/null 2>&1; then
+  kwriteconfig6 --file kdeglobals --group Icons --key Theme Papirus-Dark || true
+  # Icon-Cache neu generieren
+  if command -v kbuildsycoca6 >/dev/null 2>&1; then
+    kbuildsycoca6 --noincremental || true
+  fi
+fi
+
+# Autostart-Eintrag entfernen (einmalig ausführen)
+rm -f "$HOME/.config/autostart/apply-kde-themes.desktop" || true
+EOS
+chmod 0755 "/home/$TARGET_USER/.local/bin/apply-kde-themes.sh"
+chown "$TARGET_USER:$TARGET_USER" "/home/$TARGET_USER/.local/bin/apply-kde-themes.sh"
+
+install -d -m 0755 -o "$TARGET_USER" -g "$TARGET_USER" "/home/$TARGET_USER/.config/autostart"
+cat > "/home/$TARGET_USER/.config/autostart/apply-kde-themes.desktop" <<'EOD'
+[Desktop Entry]
+Type=Application
+Exec=/home/%u/.local/bin/apply-kde-themes.sh
+Icon=palette
+Name=Apply KDE Themes (one-time)
+Comment=Apply colors, global theme, and icons on first Plasma login
+X-KDE-AutostartScript=true
+OnlyShowIn=KDE;
+EOD
+# %u ersetzen
+sed -i "s|%u|$TARGET_USER|g" "/home/$TARGET_USER/.config/autostart/apply-kde-themes.desktop"
+chown "$TARGET_USER:$TARGET_USER" "/home/$TARGET_USER/.config/autostart/apply-kde-themes.desktop"
+
+echo "==> Fertig. Nach dem ersten Plasma-Login werden Farbschema, Global Theme und Icons automatisch angewendet."
